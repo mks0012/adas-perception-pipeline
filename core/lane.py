@@ -28,7 +28,7 @@ def detect_lanes(video_path: str, output_path: str) -> None:
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blur, 50, 150)
         
-        # Ultra-Aggressive Trapezoid ROI
+        # Ultra Aggressive Trapezoid ROI
         mask = np.zeros_like(edges)
         polygon = np.array([[
             (0, int(height * 0.60)),                   
@@ -57,7 +57,7 @@ def detect_lanes(video_path: str, output_path: str) -> None:
                 if abs(slope) < 0.4:  
                     continue
                     
-                # Heavy, production-grade lane marking thickness
+                # lane marking thickness
                 cv2.line(line_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 10)
                 
         # 1.0 weight on original frame prevents it from dimming, 1.0 on lines makes them vivid

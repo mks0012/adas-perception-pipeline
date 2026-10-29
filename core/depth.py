@@ -1,58 +1,62 @@
 import cv2
 import torch
-import logging
-import matplotlib.pyplot as plt
+import numpy as np
 
-logger = logging.getLogger(__name__)
+def generate_depth_map(video_path, frame_number, output_path):
+    device = torch.device("cpu")
+    midas = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
+    midas.to(device)
+    midas.eval()
 
-def generate_depth_map(video_path: str, frame_number: int, output_path: str) -> None:
-    try:
-        logger.info("Downloading/Loading MiDaS depth estimation model...")
-        midas = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
-        
-        # Dynamic hardware detection guardrail
-        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        logger.info(f"Mounting MiDaS model to hardware device: {device}")
-        midas.to(device)
-        midas.eval() 
-        
-        transform = torch.hub.load("intel-isl/MiDaS", "transforms").small_transform
-    except Exception as e:
-        logger.error(f"Failed to load MiDaS model or transforms: {e}")
-        raise
+    midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+    transform = midas_transforms.small_transform
 
-    logger.info(f"Extracting frame {frame_number} from video source...")
     cap = cv2.VideoCapture(video_path)
     
-    # Guardrail: Check if OpenCV actually loaded the file
-    if not cap.isOpened():
-        logger.error(f"OpenCV failed to open the video file at {video_path}.")
-        raise ValueError("Invalid video path or corrupted file.")
+    current_frame = 0
+    ret = True
+    while current_frame <= frame_number and ret:
+        ret, frame = cap.read()
+        current_frame += 1
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-    ret, frame = cap.read()
     cap.release()
 
-    if not ret:
-        logger.error(f"Failed to extract frame {frame_number}. It may exceed the video length.")
-        raise ValueError("Frame extraction failed.")
+    if not ret or frame is None:
+        raise ValueError(f"CRITICAL: Video ended before reaching frame {frame_number}")
 
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    input_batch = transform(img).to(device) 
+    input_batch = transform(img).to(device)
 
-    logger.info("Calculating spatial depth tensor...")
-    try:
-        with torch.no_grad():
-            prediction = midas(input_batch)
-            prediction = torch.nn.functional.interpolate(
-                prediction.unsqueeze(1), size=img.shape[:2], 
-                mode="bicubic", align_corners=False
-            ).squeeze()
+    with torch.no_grad():
+        prediction = midas(input_batch)
+        prediction = torch.nn.functional.interpolate(
+            prediction.unsqueeze(1),
+            size=img.shape[:2],
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze()
 
-        # Safely move tensor back to CPU for matplotlib saving
-        output = prediction.cpu().numpy() 
-        plt.imsave(output_path, output, cmap='inferno')
-        logger.info(f"Depth map successfully rendered and saved to {output_path}")
-    except Exception as e:
-        logger.error(f"Depth estimation inference crashed: {e}")
-        raise
+    depth_map = prediction.cpu().numpy()
+    
+    # 1. Isolate the active area (ignoring the dashboard)
+    h, w = depth_map.shape
+    crop_h = int(h * 0.65)
+    active_area = depth_map[:crop_h, :]
+    
+    # 2. Clip outlier values globally
+    min_val = np.min(active_area)
+    max_val = np.max(active_area)
+    depth_map_clipped = np.clip(depth_map, min_val, max_val)
+    
+    # 3. Convert to 8-bit integer scale
+    depth_map_8u = cv2.normalize(
+        depth_map_clipped, None, 0, 255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U
+    )
+    
+    # 4. Apply CLAHE to force local contrast on the edges
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    depth_map_eq = clahe.apply(depth_map_8u)
+    
+    # 5. Apply Colormap
+    depth_colormap = cv2.applyColorMap(depth_map_eq, cv2.COLORMAP_INFERNO)
+    cv2.imwrite(output_path, depth_colormap)
