@@ -1,3 +1,4 @@
+```mermaid
 graph TD
     A[Input: Raw Video<br/>dashcam.mp4] --> B(cv2.VideoCapture)
 
